@@ -1,0 +1,27 @@
+# Build output
+build/
+
+# Python environment
+.venv/
+
+# Model artifacts — regenerate from the export/trtexec commands
+models/*.pt
+models/*.onnx
+models/*.engine
+
+# Harness output
+*_lb.png
+*_blob.bin
+
+# Captured frames
+test_*.jpg
+frame_*.jpg
+
+# Tooling
+compile_commands.json
+.vscode/
+.cache/
+
+# OS noise
+*.swp
+*~
