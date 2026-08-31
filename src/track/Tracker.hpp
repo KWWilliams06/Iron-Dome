@@ -15,7 +15,7 @@ public:
     bool stale() const { return missed_ > kMaxMissed; }
     int  missed() const { return missed_; }
 private:
-    static constexpr int kMaxMissed = 5;
+    static constexpr int kMaxMissed = 15;
     cv::Vec4f             x_;
     cv::Matx44f           P_;
     cv::Matx<float, 2, 4> H_;
