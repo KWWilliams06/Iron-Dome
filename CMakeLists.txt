@@ -49,3 +49,7 @@ target_link_libraries(track PUBLIC opencv_core)
 
 add_executable(kalman_test tools/kalman_test.cpp)
 target_link_libraries(kalman_test PRIVATE track)
+
+add_executable(capture_dataset tools/capture_dataset.cpp)
+target_link_libraries(capture_dataset ${OpenCV_LIBS})
+target_compile_definitions(capture_dataset PRIVATE REPO_ROOT="${CMAKE_SOURCE_DIR}")
