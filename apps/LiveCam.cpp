@@ -4,6 +4,7 @@
 #include <opencv2/imgproc.hpp>
 #include "detect/Detector.hpp"
 #include "aim/Aimer.hpp"
+#include "link/TurretLink.hpp"
 #include "track/Tracker.hpp"
 #include <chrono>
 #include <cmath>
@@ -28,9 +29,9 @@ static std::string gstreamer_pipeline(int cw, int ch, int dw, int dh, int fps, i
            ", format=(string)BGRx ! videoconvert ! video/x-raw, format=(string)BGR ! appsink";
 }
 
-// COCO 32 = sports ball, 29 = frisbee. The balloon alternates between these.
+// Fine-tuned balloon model: single class, id 0.
 static bool isTarget(Detection const& d) {
-    return d.class_id == 32 || d.class_id == 29;
+    return d.class_id == 0;
 }
 
 int main() {
@@ -43,8 +44,10 @@ int main() {
         return -1;
     }
 
-    Detector det("/home/helios/Desktop/Turret/models/yolo26n.engine", 0.20f);
+    Detector det("/home/helios/Desktop/Turret/models/balloon.engine", 0.20f);
     Aimer aimer("/home/helios/Desktop/Turret/data/calib.yml");
+    TurretLink link("/dev/ttyACM0");
+    bool sending = false;   // 't' toggles, starts in print-only mode
     Tracker tracker(cv::Matx22f(0.0578f, 0.f, 0.f, 0.0358f), 100.f, 300.f);
 
     cv::namedWindow("CSI Camera", cv::WINDOW_AUTOSIZE);
@@ -56,6 +59,7 @@ int main() {
     cv::Point2f prev(-1.f, -1.f);
     long frameNo = 0;
     float avgDt = 0.f;
+    int gateMisses = 0;
     auto lastFrame = std::chrono::steady_clock::now();
 
     cv::Mat img;
@@ -86,9 +90,16 @@ int main() {
             float d = std::hypot(cc.x - prev.x, cc.y - prev.y);
             if (d < bestD) { bestD = d; best = int(i); }
         }
-        if (prev.x >= 0 && bestD > 40.f) best = -1;     // too far to be our target
-
-        cv::Point2f c(-1.f, -1.f);
+        if (prev.x >= 0 && bestD > 40.f) {
+            best = -1;
+            if (++gateMisses > 10) {          // gave up on the old position
+                prev = cv::Point2f(-1.f, -1.f);
+                gateMisses = 0;
+            }
+        } else {
+            gateMisses = 0;
+        }
+	cv::Point2f c(-1.f, -1.f);
         if (best >= 0) {
             auto const& d = dets[best];
             c = d.center();
@@ -109,7 +120,17 @@ int main() {
                 tracker.reset();
                 prev = cv::Point2f(-1.f, -1.f);
             } else {
-                cv::circle(img, tracker.position(), 5, cv::Scalar(255, 0, 0), -1);
+                cv::Point2f tp = tracker.position();
+                cv::circle(img, tp, 5, cv::Scalar(255, 0, 0), -1);
+
+                cv::Point2f ang = aimer.toAngles(tp);
+                if (sending) link.aim(ang.x, ang.y);
+
+                char buf[96];
+                std::snprintf(buf, sizeof(buf), "pan %+.1f  tilt %+.1f  %s",
+                              ang.x, ang.y, sending ? "SENDING" : "print-only");
+                cv::putText(img, buf, cv::Point(10, 30), cv::FONT_HERSHEY_SIMPLEX,
+                            0.7, sending ? cv::Scalar(0, 0, 255) : cv::Scalar(0, 255, 255), 2);
             }
         }
 
@@ -118,6 +139,8 @@ int main() {
         cv::imshow("CSI Camera", img);
         int key = cv::waitKey(1) & 0xff;
         if (key == 27) break;
+        if (key == 't') { sending = !sending; std::printf("sending=%d\n", sending); }
+        if (key == 'h') link.home();
     }
 
     cap.release();

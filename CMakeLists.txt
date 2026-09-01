@@ -28,7 +28,7 @@ target_include_directories(aim PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
 # --- apps ---
 add_executable(livecam apps/LiveCam.cpp)
-target_link_libraries(livecam PRIVATE detect aim track)
+target_link_libraries(livecam PRIVATE detect aim track link)
 
 # --- tools ---
 add_executable(preprocess_check tools/preprocess_check.cpp)
@@ -55,3 +55,6 @@ target_link_libraries(capture_dataset ${OpenCV_LIBS})
 target_compile_definitions(capture_dataset PRIVATE REPO_ROOT="${CMAKE_SOURCE_DIR}")
 
 add_executable(serial_check tools/serial_check.cpp)
+
+add_library(link src/link/TurretLink.cpp)
+target_include_directories(link PUBLIC src)
