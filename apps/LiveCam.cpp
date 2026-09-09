@@ -6,12 +6,17 @@
 #include "aim/Aimer.hpp"
 #include "link/TurretLink.hpp"
 #include "track/Tracker.hpp"
+#include "profiler.hpp"
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <vector>
+
+static prof::Profiler P(30, "Turret loop");
 
 static void onMouse(int event, int x, int y, int, void* userdata) {
     if (event != cv::EVENT_LBUTTONDOWN) return;
@@ -35,6 +40,13 @@ static bool isTarget(Detection const& d) {
 }
 
 int main() {
+    P.install_signal_handler();
+
+    // HEADLESS=1 skips every GUI call so this runs over SSH with no X.
+    // SEND=1 starts in sending mode (no keyboard to press 't' when headless).
+    bool const headless = std::getenv("HEADLESS") != nullptr;
+    bool sending = std::getenv("SEND") != nullptr;
+
     std::string pipeline = gstreamer_pipeline(1280, 720, 1280, 720, 30, 0);
     std::cout << "Using pipeline:\n\t" << pipeline << "\n";
 
@@ -46,12 +58,14 @@ int main() {
 
     Detector det("/home/helios/Desktop/Turret/models/balloon.engine", 0.20f);
     Aimer aimer("/home/helios/Desktop/Turret/data/calib.yml");
+    aimer.setOffsets(-5.0f, -10.0f);
     TurretLink link("/dev/ttyACM0");
-    bool sending = false;   // 't' toggles, starts in print-only mode
     Tracker tracker(cv::Matx22f(0.0578f, 0.f, 0.f, 0.0358f), 100.f, 300.f);
 
-    cv::namedWindow("CSI Camera", cv::WINDOW_AUTOSIZE);
-    cv::setMouseCallback("CSI Camera", onMouse, &aimer);
+    if (!headless) {
+        cv::namedWindow("CSI Camera", cv::WINDOW_AUTOSIZE);
+        cv::setMouseCallback("CSI Camera", onMouse, &aimer);
+    }
 
     std::ofstream log("/home/helios/Desktop/Turret/data/noise.csv");
     log << "frame,cx,cy\n";
@@ -63,10 +77,17 @@ int main() {
     auto lastFrame = std::chrono::steady_clock::now();
 
     cv::Mat img;
-    std::cout << "Hit ESC to exit\n";
+    if (headless)
+        std::cout << "Headless mode, sending=" << sending << ". Ctrl-C to stop.\n";
+    else
+        std::cout << "Hit ESC to exit\n";
 
     while (true) {
-        if (!cap.read(img)) {
+        PROF_FRAME(P);
+
+        bool ok;
+        { PROF_STAGE(P, "capture"); ok = cap.read(img); }
+        if (!ok) {
             std::cout << "Capture read error\n";
             break;
         }
@@ -78,72 +99,98 @@ int main() {
         if (frameNo % 30 == 0)
             std::printf("dt=%.4f  fps=%.1f\n", avgDt, 1.f / avgDt);
 
-        auto dets = det.detect(img);
+        std::vector<Detection> dets;
+        { PROF_STAGE(P, "detect"); dets = det.detect(img); }
 
-        // Target-class only, then nearest to the previous centroid.
-        int   best  = -1;
-        float bestD = 1e9f;
-        for (size_t i = 0; i < dets.size(); ++i) {
-            if (!isTarget(dets[i])) continue;
-            if (prev.x < 0) { best = int(i); break; }   // first lock: highest conf
-            cv::Point2f cc = dets[i].center();
-            float d = std::hypot(cc.x - prev.x, cc.y - prev.y);
-            if (d < bestD) { bestD = d; best = int(i); }
-        }
-        if (prev.x >= 0 && bestD > 40.f) {
-            best = -1;
-            if (++gateMisses > 10) {          // gave up on the old position
-                prev = cv::Point2f(-1.f, -1.f);
+        cv::Point2f c(-1.f, -1.f);
+        int best = -1;
+        {
+            PROF_STAGE(P, "gate");
+
+            // Target-class only, then nearest to the previous centroid.
+            float bestD = 1e9f;
+            for (size_t i = 0; i < dets.size(); ++i) {
+                if (!isTarget(dets[i])) continue;
+                if (prev.x < 0) { best = int(i); break; }   // first lock: highest conf
+                cv::Point2f cc = dets[i].center();
+                float d = std::hypot(cc.x - prev.x, cc.y - prev.y);
+                if (d < bestD) { bestD = d; best = int(i); }
+            }
+            if (prev.x >= 0 && bestD > 40.f) {
+                best = -1;
+                if (++gateMisses > 10) {          // gave up on the old position
+                    prev = cv::Point2f(-1.f, -1.f);
+                    gateMisses = 0;
+                }
+            } else {
                 gateMisses = 0;
             }
-        } else {
-            gateMisses = 0;
-        }
-	cv::Point2f c(-1.f, -1.f);
-        if (best >= 0) {
-            auto const& d = dets[best];
-            c = d.center();
-            log << frameNo << ',' << c.x << ',' << c.y << '\n';
-            prev = c;
-            cv::rectangle(img, cv::Point2f(d.x1, d.y1), cv::Point2f(d.x2, d.y2),
-                          cv::Scalar(0, 255, 0), 2);
-            cv::circle(img, c, 4, cv::Scalar(0, 0, 255), -1);
+
+            if (best >= 0) {
+                auto const& d = dets[best];
+                c = d.center();
+                log << frameNo << ',' << c.x << ',' << c.y << '\n';
+                prev = c;
+                if (!headless) {
+                    cv::rectangle(img, cv::Point2f(d.x1, d.y1), cv::Point2f(d.x2, d.y2),
+                                  cv::Scalar(0, 255, 0), 2);
+                    cv::circle(img, c, 4, cv::Scalar(0, 0, 255), -1);
+                }
+            }
         }
 
         if (!tracker.ready()) {
             if (best >= 0) tracker.init(c);
         } else {
-            tracker.predict(dt);
-            if (best >= 0) tracker.update(c);
+            { PROF_STAGE(P, "track");
+              tracker.predict(dt);
+              if (best >= 0) tracker.update(c);
+            }
 
             if (tracker.stale()) {
                 tracker.reset();
                 prev = cv::Point2f(-1.f, -1.f);
-            } else {
+            } else if (best >= 0) {
                 cv::Point2f tp = tracker.position();
-                cv::circle(img, tp, 5, cv::Scalar(255, 0, 0), -1);
 
-                cv::Point2f ang = aimer.toAngles(tp);
-                if (sending) link.aim(ang.x, ang.y);
+                cv::Point2f ang;
+                { PROF_STAGE(P, "aim"); ang = aimer.toAngles(tp); }
 
-                char buf[96];
-                std::snprintf(buf, sizeof(buf), "pan %+.1f  tilt %+.1f  %s",
-                              ang.x, ang.y, sending ? "SENDING" : "print-only");
-                cv::putText(img, buf, cv::Point(10, 30), cv::FONT_HERSHEY_SIMPLEX,
-                            0.7, sending ? cv::Scalar(0, 0, 255) : cv::Scalar(0, 255, 255), 2);
+                if (sending) {
+                    PROF_STAGE(P, "link");
+                    link.aim(ang.x, ang.y);
+                }
+
+                if (!headless) {
+                    cv::circle(img, tp, 5, cv::Scalar(255, 0, 0), -1);
+                    char buf[96];
+                    std::snprintf(buf, sizeof(buf), "pan %+.1f  tilt %+.1f  %s",
+                                  ang.x, ang.y, sending ? "SENDING" : "print-only");
+                    cv::putText(img, buf, cv::Point(10, 30), cv::FONT_HERSHEY_SIMPLEX,
+                                0.7, sending ? cv::Scalar(0, 0, 255) : cv::Scalar(0, 255, 255), 2);
+                }
             }
         }
 
         ++frameNo;
 
-        cv::imshow("CSI Camera", img);
-        int key = cv::waitKey(1) & 0xff;
-        if (key == 27) break;
-        if (key == 't') { sending = !sending; std::printf("sending=%d\n", sending); }
-        if (key == 'h') link.home();
+        if (!headless) {
+            int key;
+            {
+                PROF_STAGE(P, "display");
+                cv::imshow("CSI Camera", img);
+                key = cv::waitKey(1) & 0xff;
+            }
+            if (key == 27) break;
+            if (key == 't') { sending = !sending; std::printf("sending=%d\n", sending); }
+            if (key == 'h') link.home();
+        }
     }
 
     cap.release();
-    cv::destroyAllWindows();
+    if (!headless) cv::destroyAllWindows();
+
+    P.report();
+    P.to_json("/home/helios/Desktop/Turret/data/bench_baseline.json");
     return 0;
 }

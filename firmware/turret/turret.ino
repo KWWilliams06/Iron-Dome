@@ -17,14 +17,14 @@
 // --- Pan (stepper) ---------------------------------------------------
 // 200 full steps/rev = 1.8 deg = 180 centidegrees per step.
 // MODE pins are unwired, so the DRV8825 runs in full-step mode.
-#define CDEG_PER_STEP     180
-#define STEP_INTERVAL_US  2000L   // max step rate; matches bench test
+#define CDEG_PER_STEP     11
+#define STEP_INTERVAL_US  300L   // max step rate; matches bench test
 #define PAN_DIR_SIGN      (-1)       // flip to -1 if pan runs backwards
 
 // --- Tilt (servo) ----------------------------------------------------
 #define SERVO_CENTER_US   1500
 #define US_PER_DEG        10.0f   // NEEDS CALIBRATION, see notes
-#define TILT_SIGN         1       // flip to -1 if tilt runs backwards
+#define TILT_SIGN         (-1)       // flip to -1 if tilt runs backwards
 
 Servo tiltServo;
 
@@ -48,7 +48,7 @@ static void sendTelemetry(uint8_t type, uint8_t flags) {
   TelemetryPacket t;
   t.sync  = TURRET_SYNC;
   t.type  = type;
-  t.pan   = (int16_t)(panSteps * CDEG_PER_STEP);
+  t.pan   = (int16_t)((panSteps * 180) / 16);
   t.tilt  = tiltCdeg;
   t.seq   = lastSeq;
   t.flags = flags;
@@ -77,7 +77,7 @@ static void handleFrame() {
     case CMD_AIM: {
       int16_t p = clampCdeg(c->pan,  PAN_MIN_CDEG,  PAN_MAX_CDEG,  &err);
       int16_t t = clampCdeg(c->tilt, TILT_MIN_CDEG, TILT_MAX_CDEG, &err);
-      panTargetSteps = (long)p / CDEG_PER_STEP;
+      panTargetSteps = ((long)p * 16) / 180;
       applyTilt(t);
       break;
     }

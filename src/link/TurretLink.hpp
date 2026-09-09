@@ -27,6 +27,6 @@ private:
     float    lastTilt_{0.0f};
     int      frameCount_{0};
 
-    static constexpr float kDeadzoneDeg = 1.0f;
+    static constexpr float kDeadzoneDeg = 2.5f;
     static constexpr int   kSendEveryN  = 3;
 };
